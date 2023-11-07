@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "targets.h"
 #include "wifi_frame_parser.h"
+#include "rid_frame_dumps.h"
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
@@ -111,48 +112,34 @@ static void tft_init()
     tft.drawString("RidRadarReceiver", 0, 0);
 }
 
-static void serial_dump_pilot(RadarPilotInfo *p)
+static void tft_show_pilot_opid(RadarPilotInfo *p, uint16_t xpos, uint16_t ypos)
 {
-    Serial.printf("%u ==== " MACSTR " ====\r\n", millis(), MAC2STR(p->mac));
-
-    if (p->uas_data.BasicIDValid)
+    char mac[19];
+    char *opid = nullptr;
+    if (p->uas_data.OperatorIDValid)
+    {
+        opid = p->uas_data.OperatorID.OperatorId;
+    }
+    else if (p->uas_data.BasicIDValid)
     {
         for (unsigned i=0; i<ODID_BASIC_ID_MAX_MESSAGES; ++i)
         {
             if (p->uas_data.BasicID[i].IDType != ODID_IDTYPE_NONE)
             {
-                Serial.printf("BasicID(%u): [%d] %20s - %d\r\n", i,
-                    p->uas_data.BasicID[i].IDType,
-                    p->uas_data.BasicID[i].UASID,
-                    p->uas_data.BasicID[i].UAType);
+                opid = p->uas_data.BasicID[i].UASID;
+                break;
             }
         }
     }
-
-    if (p->uas_data.OperatorIDValid)
+    if (!opid)
     {
-        Serial.printf("OperatorID: [%d] %s\r\n",
-            p->uas_data.OperatorID.OperatorIdType,
-            p->uas_data.OperatorID.OperatorId);
+        snprintf(mac, sizeof(mac), MACSTR, MAC2STR(p->mac));
+        opid = mac;
+        //tft.fillRect(0, 0, tft.width(), tft.fontHeight(), TFT_BLACK);
     }
 
-    if (p->uas_data.LocationValid)
-    {
-        Serial.printf("Location: %.6f, %.6f Hdg: %d Alt: %d Spd: %.1f\r\n",
-                p->uas_data.Location.Latitude,
-                p->uas_data.Location.Longitude,
-                (int32_t)p->uas_data.Location.Direction,
-                (int32_t)p->uas_data.Location.Height,
-                p->uas_data.Location.SpeedHorizontal);
-    }
-
-    if (p->uas_data.SystemValid)
-    {
-        Serial.printf("Operator Location: [%d] %.6f, %.6f\r\n",
-                p->uas_data.System.OperatorLocationType,
-                p->uas_data.System.OperatorLatitude,
-                p->uas_data.System.OperatorLongitude);
-    }
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.drawString(opid, xpos, ypos);
 }
 
 static void tft_show_pilot(RadarPilotInfo *p)
@@ -163,11 +150,7 @@ static void tft_show_pilot(RadarPilotInfo *p)
     uint16_t ypos = 0;
 
     // OperatorID
-    if (p->uas_data.OperatorIDValid)
-    {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.drawString(p->uas_data.OperatorID.OperatorId, xpos, ypos);
-    }
+    tft_show_pilot_opid(p, xpos, ypos);
 
     xpos = 0;
     ypos += tft.fontHeight();
@@ -233,18 +216,18 @@ static void tft_show_pilot(RadarPilotInfo *p)
     }
 
     // RSSI and bar
+    ypos = 96;
     tft.setTextFont(2);
     tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-    tft.drawNumber(p->rssi, 0, ypos);
-    ypos = 96;
-    uint16_t rssiWidth = map(constrain(p->rssi, -100, -50), -100, -50, 0, tft.width());
+    tft.drawNumber(p->rssi, 0, ypos - tft.fontHeight() - 2);
+    uint16_t rssiWidth = map(constrain(p->rssi, -95, -75), -95, -75, 0, tft.width());
     tft.fillRect(0, ypos, rssiWidth, 12, TFT_DARKGREY);
     tft.drawRect(0, ypos, rssiWidth, 12, TFT_ORANGE);
     tft.fillRect(rssiWidth, ypos, tft.width() - rssiWidth, tft.fontHeight(), TFT_BLACK);
 
     // update date/time
-    tft.setTextFont(2);
     ypos = tft.height() - tft.fontHeight();
+    tft.setTextFont(2);
     tft.setTextColor(TFT_BLUE, TFT_BLACK);
     tft.drawNumber(lastPilotUpdate, 0, ypos);
 }
