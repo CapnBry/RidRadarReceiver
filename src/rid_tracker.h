@@ -18,6 +18,12 @@ typedef struct tagRadarPilotInfo {
     ODID_UAS_Data uas_data;
 } RadarPilotInfo;
 
+// ODID uses these decoded values for invalid / no value / unknown
+static inline bool rid_dir_valid(float dir) { return dir < 360.0f; }           // INV_DIR 361
+static inline bool rid_speed_valid(float spd) { return spd < INV_SPEED_H; }    // 255
+static inline bool rid_alt_valid(float alt) { return alt > INV_ALT; }          // -1000
+static inline bool rid_latlon_valid(double lat, double lon) { return lat != 0.0 || lon != 0.0; }
+
 // Decode msg into the matching pilot (adding one if needed, evicting the
 // least recently seen if full) and return it. Only call from the main loop.
 RadarPilotInfo *rid_tracker_process(const RidRawMessage *msg, uint32_t now);

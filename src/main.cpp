@@ -24,6 +24,9 @@ static uint32_t lastPilotUpdate;
 // Pilot on the display, kept until it hasn't been heard for DISPLAY_HOLD_MS
 static RadarPilotInfo *shownPilot;
 #define DISPLAY_HOLD_MS 10000
+// Pixel widths of the number fields at their widest value, measured once.
+// The fonts are proportional but all digits in a font are the same width
+static int16_t fwCoord, fwAlt, fwHdgSpd, fwRssi;
 
 static void wifi_promisc_callback(void *buf, wifi_promiscuous_pkt_type_t type)
 {
@@ -109,6 +112,10 @@ static void tft_init()
     digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
 
     tft.init();
+    fwCoord = tft.textWidth("888.888888", 4);
+    fwAlt = tft.textWidth("-8888", 2);
+    fwHdgSpd = tft.textWidth("888", 2);
+    fwRssi = tft.textWidth("-888", 2);
     tft.setRotation(1); // 3 to flip
     tft.fillScreen(TFT_BLACK);
     tft.setTextWrap(false, false);
@@ -176,19 +183,21 @@ static void tft_show_pilot_opid(RadarPilotInfo *p, uint16_t xpos, uint16_t ypos)
 {
     char mac[19];
     char *opid = nullptr;
-    if (p->uas_data.OperatorIDValid)
-    {
+    // Operator ID is optional and often sent empty (US), so fall back to the
+    // CAA registration ID, then any other basic ID (serial number etc)
+    if (p->uas_data.OperatorIDValid && p->uas_data.OperatorID.OperatorId[0])
         opid = p->uas_data.OperatorID.OperatorId;
-    }
-    else if (p->uas_data.BasicIDValid)
+    for (unsigned pass=0; pass<2 && !opid; ++pass)
     {
         for (unsigned i=0; i<ODID_BASIC_ID_MAX_MESSAGES; ++i)
         {
-            if (p->uas_data.BasicID[i].IDType != ODID_IDTYPE_NONE)
-            {
-                opid = p->uas_data.BasicID[i].UASID;
-                break;
-            }
+            ODID_BasicID_data *bid = &p->uas_data.BasicID[i];
+            if (!p->uas_data.BasicIDValid[i] || bid->IDType == ODID_IDTYPE_NONE || !bid->UASID[0])
+                continue;
+            if (pass == 0 && bid->IDType != ODID_IDTYPE_CAA_REGISTRATION_ID)
+                continue;
+            opid = bid->UASID;
+            break;
         }
     }
     if (!opid)
@@ -218,6 +227,39 @@ static void tft_clear_pilot()
     tft.fillRect(0, 0, tft.width(), tft.height() - tft.fontHeight(2), TFT_BLACK);
 }
 
+// Draw n right aligned in a field w wide, padding covers the previous value.
+// Unknown values are shown as dashes
+static int32_t tft_draw_number_field(int32_t n, bool valid, int32_t x, int32_t y, int16_t w)
+{
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextPadding(w);
+    if (valid)
+        tft.drawNumber(n, x + w, y);
+    else
+        tft.drawString("---", x + w, y);
+    tft.setTextPadding(0);
+    tft.setTextDatum(TL_DATUM);
+    return w;
+}
+
+// Draw one coordinate, the value then the hemisphere letter at the right edge
+static void tft_draw_coord(double val, bool valid, const char *pos, const char *neg, int32_t x, int32_t y)
+{
+    tft.setTextPadding(fwCoord);
+    if (valid)
+        tft.drawFloat(val < 0 ? -val : val, 6, x, y);
+    else
+        tft.drawString("---", x, y);
+
+    int32_t hx = tft.width() - 25;
+    tft.setTextPadding(tft.width() - hx);
+    if (valid)
+        tft.drawString(val < 0 ? neg : pos, hx, y);
+    else
+        tft.fillRect(hx, y, tft.width() - hx, tft.fontHeight(), TFT_BLACK);
+    tft.setTextPadding(0);
+}
+
 static void tft_show_pilot(RadarPilotInfo *p)
 {
     tft.setTextFont(4);
@@ -236,36 +278,12 @@ static void tft_show_pilot(RadarPilotInfo *p)
     xpos = tft.drawString("Pos", xpos, ypos) + 5;
     if (p->uas_data.LocationValid)
     {
+        const ODID_Location_data *loc = &p->uas_data.Location;
+        bool posValid = rid_latlon_valid(loc->Latitude, loc->Longitude);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        const char *dirStr;
-        double dirVal;
-        if (p->uas_data.Location.Latitude < 0)
-        {
-            dirStr = "S";
-            dirVal = -p->uas_data.Location.Latitude;
-        }
-        else
-        {
-            dirStr = "N";
-            dirVal = p->uas_data.Location.Latitude;
-        }
-        tft.drawFloat(dirVal, 6, xpos, ypos);
-        tft.drawString(dirStr, tft.width() - 25, ypos);
-
-        //xpos = 0;
+        tft_draw_coord(loc->Latitude, posValid, "N", "S", xpos, ypos);
         ypos += tft.fontHeight();
-        if (p->uas_data.Location.Longitude < 0)
-        {
-            dirStr = "W";
-            dirVal = -p->uas_data.Location.Longitude;
-        }
-        else
-        {
-            dirStr = "E";
-            dirVal = p->uas_data.Location.Longitude;
-        }
-        tft.drawFloat(dirVal, 6, xpos, ypos);
-        tft.drawString(dirStr, tft.width() - 25, ypos);
+        tft_draw_coord(loc->Longitude, posValid, "E", "W", xpos, ypos);
 
         // Heading / Altitude line
         ypos += tft.fontHeight();
@@ -273,20 +291,20 @@ static void tft_show_pilot(RadarPilotInfo *p)
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         xpos += tft.drawString("Alt", xpos, ypos) + 5;
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        xpos += tft.drawNumber((int32_t)(p->uas_data.Location.Height), xpos, ypos);
+        xpos += tft_draw_number_field((int32_t)loc->Height, rid_alt_valid(loc->Height), xpos, ypos, fwAlt) + 2;
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.drawString("m", xpos, ypos);
 
         xpos = tft.width() / 2;
         xpos += tft.drawString("Hdg", xpos, ypos) + 5;
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawNumber((int32_t)(p->uas_data.Location.Direction), xpos, ypos);
+        tft_draw_number_field((int32_t)loc->Direction, rid_dir_valid(loc->Direction), xpos, ypos, fwHdgSpd);
 
         xpos = tft.width() * 3 / 4;
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         xpos += tft.drawString("Spd", xpos, ypos) + 5;
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        xpos += tft.drawNumber((int32_t)(p->uas_data.Location.SpeedHorizontal), xpos, ypos);
+        xpos += tft_draw_number_field((int32_t)loc->SpeedHorizontal, rid_speed_valid(loc->SpeedHorizontal), xpos, ypos, fwHdgSpd) + 2;
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.drawString("m/s", xpos, ypos);
     }
@@ -295,7 +313,10 @@ static void tft_show_pilot(RadarPilotInfo *p)
     ypos = 96;
     tft.setTextFont(2);
     tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    // Pad to the widest value so a shorter number covers the previous one
+    tft.setTextPadding(fwRssi);
     tft.drawNumber(p->rssi, 0, ypos - tft.fontHeight() - 2);
+    tft.setTextPadding(0);
     uint16_t rssiWidth = map(constrain(p->rssi, -95, -75), -95, -75, 0, tft.width());
     tft.fillRect(0, ypos, rssiWidth, 12, TFT_DARKGREY);
     tft.drawRect(0, ypos, rssiWidth, 12, TFT_ORANGE);

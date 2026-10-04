@@ -21,6 +21,23 @@ static void serial_dump_string(const char *s)
     Serial.write('"');
 }
 
+// Write "key":value, or "key":null when the value is unknown
+static void serial_dump_float(const char *key, bool valid, double val, int decimals)
+{
+    if (valid)
+        Serial.printf("\"%s\":%.*f", key, decimals, val);
+    else
+        Serial.printf("\"%s\":null", key);
+}
+
+static void serial_dump_int(const char *key, bool valid, int32_t val)
+{
+    if (valid)
+        Serial.printf("\"%s\":%d", key, val);
+    else
+        Serial.printf("\"%s\":null", key);
+}
+
 void serial_dump_pilot(RadarPilotInfo *p)
 {
     // JSON starts with "uasdata": <json version> and source MAC
@@ -77,12 +94,19 @@ void serial_dump_location(RadarPilotInfo *p)
     if (!p->uas_data.LocationValid)
         return;
 
-    Serial.printf(",\"location\":{\"lat\":%.6f,\"lon\":%.6f,\"hdg\":%d,\"alt\":%d,\"spdh\":%.1f}",
-        p->uas_data.Location.Latitude,
-        p->uas_data.Location.Longitude,
-        (int32_t)p->uas_data.Location.Direction,
-        (int32_t)p->uas_data.Location.Height,
-        p->uas_data.Location.SpeedHorizontal);
+    const ODID_Location_data *loc = &p->uas_data.Location;
+    bool posValid = rid_latlon_valid(loc->Latitude, loc->Longitude);
+    Serial.print(",\"location\":{");
+    serial_dump_float("lat", posValid, loc->Latitude, 6);
+    Serial.write(',');
+    serial_dump_float("lon", posValid, loc->Longitude, 6);
+    Serial.write(',');
+    serial_dump_int("hdg", rid_dir_valid(loc->Direction), (int32_t)loc->Direction);
+    Serial.write(',');
+    serial_dump_int("alt", rid_alt_valid(loc->Height), (int32_t)loc->Height);
+    Serial.write(',');
+    serial_dump_float("spdh", rid_speed_valid(loc->SpeedHorizontal), loc->SpeedHorizontal, 1);
+    Serial.write('}');
 }
 
 void serial_dump_system(RadarPilotInfo *p)
@@ -103,9 +127,13 @@ void serial_dump_system(RadarPilotInfo *p)
     // float OperatorAltitudeGeo;// meter (WGS84-HAE). Invalid, No Value, or Unknown: -1000m
     // uint32_t Timestamp;       // Relative to 00:00:00 01/01/2019 UTC/Unix Time
 
-    Serial.printf(",\"operator\":{\"loctype\":%d,\"lat\":%.6f,\"lon\":%.6f,\"alt\":%d}",
-        p->uas_data.System.OperatorLocationType,
-        p->uas_data.System.OperatorLatitude,
-        p->uas_data.System.OperatorLongitude,
-        (int32_t)p->uas_data.System.OperatorAltitudeGeo);
+    const ODID_System_data *sys = &p->uas_data.System;
+    bool posValid = rid_latlon_valid(sys->OperatorLatitude, sys->OperatorLongitude);
+    Serial.printf(",\"operator\":{\"loctype\":%d,", sys->OperatorLocationType);
+    serial_dump_float("lat", posValid, sys->OperatorLatitude, 6);
+    Serial.write(',');
+    serial_dump_float("lon", posValid, sys->OperatorLongitude, 6);
+    Serial.write(',');
+    serial_dump_int("alt", rid_alt_valid(sys->OperatorAltitudeGeo), (int32_t)sys->OperatorAltitudeGeo);
+    Serial.write('}');
 }
