@@ -26,7 +26,7 @@ void display_show_active(bool active)
     tft->fillRect(tft->width() - 12, tft->height() - 12, 12, 12, active ? TFT_GREEN : TFT_BLACK);
 }
 
-// Source icons are h tall (the header line) and this wide
+// Source icons are h tall (the header text) and this wide
 static int32_t tft_icon_width(int32_t h)
 {
     return h * 4 / 3;
@@ -39,15 +39,17 @@ static void tft_draw_icon_bluetooth(int32_t x, int32_t y, int32_t h)
     int32_t w = tft_icon_width(h);
     tft->fillRect(x, y, w, h, TFT_BLACK);
 
-    int32_t bw = h * 2 / 3;
+    int32_t bw = h * 2 / 3 + 2;
     int32_t bx = x + (w - bw) / 2;
     tft->fillSmoothRoundRect(bx, y, bw, h, bw / 2, btBlue, TFT_BLACK);
 
     // The rune is one line: lower-left arm, up to the bottom point, down the
-    // stem, top point, then the upper-left arm
-    float cx = bx + bw / 2.0f;
-    float y0 = y + h * 0.18f;
-    float y1 = y + h * 0.82f;
+    // stem, top point, then the upper-left arm. Line coordinates are pixel
+    // centers, so the middle of an n pixel span is at (n - 1) / 2
+    float cx = bx + (bw - 1) / 2.0f;
+    float cy = y + (h - 1) / 2.0f;
+    float y0 = cy - h * 0.32f;
+    float y1 = cy + h * 0.32f;
     float q = (y1 - y0) / 4;
     const float pts[][2] = {
         { cx - q, y0 + q }, { cx + q, y1 - q }, { cx, y1 },
@@ -109,18 +111,26 @@ static void tft_show_pilot_opid(RadarPilotInfo *p, uint16_t xpos, uint16_t ypos)
         //tft->fillRect(0, 0, tft->width(), tft->fontHeight(), TFT_BLACK);
     }
 
-    // Header line: ID, then the source icon right aligned
+    // Header line: ID, then the source icon right aligned. The icon is the
+    // height of the capitals/digits, which start one row below the top of
+    // the character cell and end at the baseline
     int32_t h = tft->fontHeight();
-    int32_t iconX = tft->width() - tft_icon_width(h);
+    int32_t iconY = ypos + 1;
+    int32_t iconH = pgm_read_byte(&fontdata[tft->textfont].baseline) - 1;
+    int32_t iconW = tft_icon_width(iconH);
+    int32_t iconX = tft->width() - iconW;
     tft->setTextColor(TFT_RED, TFT_BLACK);
     xpos += tft->drawString(opid, xpos, ypos);
     if (xpos < iconX)
         tft->fillRect(xpos, ypos, iconX - xpos, h, TFT_BLACK);
 
+    // Clear the rest of the line above and below the icon
+    tft->fillRect(iconX, ypos, iconW, iconY - ypos, TFT_BLACK);
+    tft->fillRect(iconX, iconY + iconH, iconW, ypos + h - (iconY + iconH), TFT_BLACK);
     if (p->source == RID_SRC_BLE4)
-        tft_draw_icon_bluetooth(iconX, ypos, h);
+        tft_draw_icon_bluetooth(iconX, iconY, iconH);
     else
-        tft_draw_icon_wifi(iconX, ypos, h);
+        tft_draw_icon_wifi(iconX, iconY, iconH);
 }
 
 // Clear everything but the status line at the bottom
