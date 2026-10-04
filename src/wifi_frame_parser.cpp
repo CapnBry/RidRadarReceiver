@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "wifi_frame_parser.h"
+#include "rid_queue.h"
 #include <odid_wifi.h>
 
 #define RADAR_ID_LEN 20
@@ -9,8 +10,6 @@
 #define IEEE80211_ELEMID_SSID		0x00
 #define IEEE80211_ELEMID_RATES		0x01
 #define IEEE80211_ELEMID_VENDOR		0xDD
-
-RadarPilotInfo pilot;
 
 static void hexdump(void *p, size_t len)
 {
@@ -102,13 +101,6 @@ void wifi_parse_pkt(wifi_promiscuous_pkt_t *pkt)
     // can use si->counter to maybe do link quality, by detecting missing packet
     offset += sizeof(ODID_service_info);
 
-    ODID_MessagePack_encoded *msg_pack_enc = (ODID_MessagePack_encoded *)&pkt->payload[offset];
-    size_t expected_size = sizeof(ODID_MessagePack_encoded) - ODID_MESSAGE_SIZE * (ODID_PACK_MAX_MESSAGES - msg_pack_enc->MsgPackSize);
-    if (expected_size < payloadlen - offset
-        && decodeMessagePack(&pilot.uas_data, msg_pack_enc) == ODID_SUCCESS)
-    {
-        memcpy(pilot.mac, hdr->sa, sizeof(pilot.mac));
-        pilot.rssi = pkt->rx_ctrl.rssi;
-        pilot.dirty = 1;
-    }
+    if (offset < payloadlen)
+        rid_queue_push_pack(RID_SRC_WIFI_BEACON, hdr->sa, pkt->rx_ctrl.rssi, &pkt->payload[offset], payloadlen - offset);
 }

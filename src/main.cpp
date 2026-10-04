@@ -2,6 +2,9 @@
 #include "targets.h"
 #include "wifi_frame_parser.h"
 #include "rid_frame_dumps.h"
+#include "rid_queue.h"
+#include "rid_tracker.h"
+#include "ble_scanner.h"
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
@@ -18,6 +21,9 @@ static Button btn0;
 static enum eLightLevel { llDay, llNight } g_LightLevel;
 #endif
 static uint32_t lastPilotUpdate;
+// Pilot on the display, kept until it hasn't been heard for DISPLAY_HOLD_MS
+static RadarPilotInfo *shownPilot;
+#define DISPLAY_HOLD_MS 10000
 
 static void wifi_promisc_callback(void *buf, wifi_promiscuous_pkt_type_t type)
 {
@@ -99,8 +105,8 @@ static void tft_set_backlight(bool high)
 
 static void tft_init()
 {
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, TFT_BACKLIGHT_ON);
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
 
     tft.init();
     tft.setRotation(1); // 3 to flip
@@ -110,6 +116,60 @@ static void tft_init()
     tft.setTextFont(4);
     tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK);
     tft.drawString("RidRadarReceiver", 0, 0);
+}
+
+// Source icons are h tall (the header line) and this wide
+static int32_t tft_icon_width(int32_t h)
+{
+    return h * 4 / 3;
+}
+
+// Bluetooth logo, white rune on a blue oval
+static void tft_draw_icon_bluetooth(int32_t x, int32_t y, int32_t h)
+{
+    const uint32_t btBlue = tft.color565(0x00, 0x82, 0xfc);
+    int32_t w = tft_icon_width(h);
+    tft.fillRect(x, y, w, h, TFT_BLACK);
+
+    int32_t bw = h * 2 / 3;
+    int32_t bx = x + (w - bw) / 2;
+    tft.fillSmoothRoundRect(bx, y, bw, h, bw / 2, btBlue, TFT_BLACK);
+
+    // The rune is one line: lower-left arm, up to the bottom point, down the
+    // stem, top point, then the upper-left arm
+    float cx = bx + bw / 2.0f;
+    float y0 = y + h * 0.18f;
+    float y1 = y + h * 0.82f;
+    float q = (y1 - y0) / 4;
+    const float pts[][2] = {
+        { cx - q, y0 + q }, { cx + q, y1 - q }, { cx, y1 },
+        { cx, y0 }, { cx + q, y0 + q }, { cx - q, y1 - q },
+    };
+    float wd = h / 12.0f;
+    for (unsigned i=0; i<(sizeof(pts) / sizeof(pts[0])) - 1; ++i)
+        tft.drawWideLine(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], wd, TFT_WHITE, btBlue);
+}
+
+// WiFi signal indicator, square dot at the bottom center with arcs above it
+static void tft_draw_icon_wifi(int32_t x, int32_t y, int32_t h)
+{
+    int32_t w = tft_icon_width(h);
+    tft.fillRect(x, y, w, h, TFT_BLACK);
+
+    int32_t t = (h + 5) / 9; // arc thickness
+    int32_t dot = t + 1;
+    int32_t cx = x + w / 2;
+    int32_t cy = y + h - 1 - dot / 2;
+    tft.fillRect(cx - dot / 2, y + h - dot, dot, dot, TFT_GREEN);
+
+    // Three 90 degree arcs centered on the dot, the outer one reaching the
+    // top. Arc angles start at 6 o'clock going clockwise so 180 is straight up
+    int32_t rmax = cy - y;
+    for (int32_t i=1; i<=3; ++i)
+    {
+        int32_t r = rmax * i / 3;
+        tft.drawSmoothArc(cx, cy, r, r - t, 135, 225, TFT_GREEN, TFT_BLACK, true);
+    }
 }
 
 static void tft_show_pilot_opid(RadarPilotInfo *p, uint16_t xpos, uint16_t ypos)
@@ -138,8 +198,24 @@ static void tft_show_pilot_opid(RadarPilotInfo *p, uint16_t xpos, uint16_t ypos)
         //tft.fillRect(0, 0, tft.width(), tft.fontHeight(), TFT_BLACK);
     }
 
+    // Header line: ID, then the source icon right aligned
+    int32_t h = tft.fontHeight();
+    int32_t iconX = tft.width() - tft_icon_width(h);
     tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.drawString(opid, xpos, ypos);
+    xpos += tft.drawString(opid, xpos, ypos);
+    if (xpos < iconX)
+        tft.fillRect(xpos, ypos, iconX - xpos, h, TFT_BLACK);
+
+    if (p->source == RID_SRC_BLE4)
+        tft_draw_icon_bluetooth(iconX, ypos, h);
+    else
+        tft_draw_icon_wifi(iconX, ypos, h);
+}
+
+// Clear everything but the status line at the bottom
+static void tft_clear_pilot()
+{
+    tft.fillRect(0, 0, tft.width(), tft.height() - tft.fontHeight(2), TFT_BLACK);
 }
 
 static void tft_show_pilot(RadarPilotInfo *p)
@@ -314,14 +390,29 @@ static void temp_update(uint32_t now)
 #endif
 }
 
-static void pilot_dump(uint32_t now)
+static void rid_process_queue(uint32_t now)
 {
-    RadarPilotInfo pcopy = pilot;
-    memset(&pilot, 0, sizeof(pilot));
+    RidRawMessage msg;
+    bool shownUpdated = false;
+    while (rid_queue_receive(&msg))
+    {
+        RadarPilotInfo *p = rid_tracker_process(&msg, now);
+        lastPilotUpdate = now;
 
-    lastPilotUpdate = now;
-    serial_dump_pilot(&pcopy);
-    tft_show_pilot(&pcopy);
+        // Switch to another pilot only once the shown one goes quiet
+        if (p != shownPilot)
+        {
+            if (shownPilot && now - shownPilot->lastSeen < DISPLAY_HOLD_MS)
+                continue;
+            shownPilot = p;
+            tft_clear_pilot();
+        }
+        shownUpdated = true;
+    }
+
+    rid_tracker_flush(now, serial_dump_pilot);
+    if (shownUpdated)
+        tft_show_pilot(shownPilot);
 }
 
 static void hardware_init()
@@ -343,17 +434,18 @@ void setup()
     Serial.begin(115200);
     Serial.println("$UCID,RidRadarReceiver," __DATE__ " " __TIME__);
 
+    rid_queue_init();
     hardware_init();
     tft_init();
     wifi_beacon_init();
+    ble_scanner_init();
 }
 
 void loop()
 {
     uint32_t now = millis();
 
-    if (pilot.dirty)
-        pilot_dump(now);
+    rid_process_queue(now);
     ambientlight_update(now);
     tft_update_active(now);
     btn_update();

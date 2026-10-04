@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wifi_frame_parser.h"
+#include "rid_tracker.h"
 
 // Dump everything in the packet
 void serial_dump_pilot(RadarPilotInfo *p);

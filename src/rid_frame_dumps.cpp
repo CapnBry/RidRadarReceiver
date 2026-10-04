@@ -1,10 +1,31 @@
 #include <Arduino.h>
 #include "rid_frame_dumps.h"
 
+// Write s as a quoted JSON string, escaping anything that isn't printable ASCII
+static void serial_dump_string(const char *s)
+{
+    Serial.write('"');
+    for (; *s; ++s)
+    {
+        uint8_t c = *s;
+        if (c == '"' || c == '\\')
+        {
+            Serial.write('\\');
+            Serial.write(c);
+        }
+        else if (c < ' ' || c > '~')
+            Serial.printf("\\u%04x", c);
+        else
+            Serial.write(c);
+    }
+    Serial.write('"');
+}
+
 void serial_dump_pilot(RadarPilotInfo *p)
 {
     // JSON starts with "uasdata": <json version> and source MAC
-    Serial.printf("{\"uasdata\":1,\"mac\":%02x%02x%02x%02x%02x%02x", MAC2STR(p->mac));
+    Serial.printf("{\"uasdata\":1,\"mac\":\"%02x%02x%02x%02x%02x%02x\"", MAC2STR(p->mac));
+    Serial.printf(",\"src\":\"%s\",\"rssi\":%d", p->source == RID_SRC_BLE4 ? "ble4" : "wifi", p->rssi);
 
     serial_dump_basicids(p);
     serial_dump_opid(p);
@@ -16,25 +37,25 @@ void serial_dump_pilot(RadarPilotInfo *p)
 
 void serial_dump_basicids(RadarPilotInfo *p)
 {
-    if (!p->uas_data.BasicIDValid)
-        return;
-
     bool leadinSent = false;
     for (unsigned i=0; i<ODID_BASIC_ID_MAX_MESSAGES; ++i)
     {
-        if (p->uas_data.BasicID[i].IDType != ODID_IDTYPE_NONE)
-        {
-            if (!leadinSent)
-            {
-                leadinSent = true;
-                Serial.print(",\"basicid\":[");
-            }
+        if (!p->uas_data.BasicIDValid[i] || p->uas_data.BasicID[i].IDType == ODID_IDTYPE_NONE)
+            continue;
 
-            Serial.printf("\"type\":%d,\"uatype\":%d,\"id\":%s,",
-                p->uas_data.BasicID[i].IDType,
-                p->uas_data.BasicID[i].UAType,
-                p->uas_data.BasicID[i].UASID);
+        if (!leadinSent)
+        {
+            leadinSent = true;
+            Serial.print(",\"basicid\":[");
         }
+        else
+            Serial.write(',');
+
+        Serial.printf("{\"type\":%d,\"uatype\":%d,\"id\":",
+            p->uas_data.BasicID[i].IDType,
+            p->uas_data.BasicID[i].UAType);
+        serial_dump_string(p->uas_data.BasicID[i].UASID);
+        Serial.write('}');
     }
 
     if (leadinSent)
@@ -46,9 +67,9 @@ void serial_dump_opid(RadarPilotInfo *p)
     if (!p->uas_data.OperatorIDValid)
         return;
 
-    Serial.printf(",\"operatorid\":{\"type\":%d,\"id\":%s}",
-        p->uas_data.OperatorID.OperatorIdType,
-        p->uas_data.OperatorID.OperatorId);
+    Serial.printf(",\"operatorid\":{\"type\":%d,\"id\":", p->uas_data.OperatorID.OperatorIdType);
+    serial_dump_string(p->uas_data.OperatorID.OperatorId);
+    Serial.write('}');
 }
 
 void serial_dump_location(RadarPilotInfo *p)
@@ -88,5 +109,3 @@ void serial_dump_system(RadarPilotInfo *p)
         p->uas_data.System.OperatorLongitude,
         (int32_t)p->uas_data.System.OperatorAltitudeGeo);
 }
-
-
